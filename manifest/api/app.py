@@ -6,6 +6,7 @@ import logging
 import os
 import socket
 from typing import Dict
+from typing import List, Tuple, Any
 
 import pkg_resources
 from flask import Flask, Response, request
@@ -166,6 +167,7 @@ def completions() -> Response:
     prompt = request.json["prompt"]
     del request.json["prompt"]
     generation_args = request.json
+    print(generation_args)
 
     if not isinstance(prompt, (str, list)):
         raise ValueError("Prompt must be a str or list of str")
@@ -246,6 +248,63 @@ def embed() -> Response:
             status=400,
         )
 
+import torch
+import numpy as np
+
+def _score_sequence(
+    prompt, **kwargs: Any
+) -> List[Tuple[float, List[int], List[float]]]:
+    """
+    Score a sequence of choices.
+    Args:
+        prompt (:obj:`str` or :obj:`List[str]`):
+            The prompt to score the choices against.
+        **kwargs:
+            Additional keyword arguments passed along to the :obj:`__call__` method.
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    is_input_ids = False
+    if isinstance(prompt, str):
+        prompt = [prompt]
+
+    if isinstance(prompt, list):
+        if isinstance(prompt[0], list):
+            is_input_ids = True
+    
+    if is_input_ids is not True:
+        raise ValueError("Prompt string not implemented yet for logits")
+    else:
+        #TODO: need to change if prompt contains more than one input ids
+        overall_inps = torch.tensor(prompt).to(device)
+        inps = overall_inps[...,:-1]
+        attention_mask = torch.ones(inps.shape).to(device)
+        # logits = model(input_ids=inps, attention_mask=attention_mask)[0]
+        logits = model.pipeline.model(input_ids=inps, attention_mask=attention_mask)[0]
+        log_softmax_logits = torch.log_softmax(logits, dim=-1)
+        shift_labels = overall_inps[..., 1:].contiguous().to(device)
+        seq_token_log_probs = torch.gather(
+            log_softmax_logits, -1, shift_labels.unsqueeze(-1)
+        )
+        top_token_log_probs = torch.topk(log_softmax_logits,k=1,dim=-1)
+
+        top_token_index = top_token_log_probs.indices
+        
+        top_token_index = top_token_index.squeeze(dim=-1)
+        seq_token_log_probs = seq_token_log_probs.squeeze(dim=-1)
+        seq_log_prob = seq_token_log_probs.sum(dim=-1)
+        top_token_index_modified = [[None] + token for token in top_token_index.tolist()]
+        seq_token_log_probs_modified = [[None] + log_probs for log_probs in seq_token_log_probs.tolist()]
+
+    return [
+        (seq, tokens, seq_token, greedy_token)
+        for seq, tokens, seq_token, greedy_token in zip(
+            seq_log_prob.tolist(),
+            overall_inps.tolist(),
+            seq_token_log_probs_modified,
+            top_token_index_modified
+        )
+    ]
 
 @app.route("/score_sequence", methods=["POST"])
 def score_sequence() -> Response:
@@ -253,18 +312,21 @@ def score_sequence() -> Response:
     prompt = request.json["prompt"]
     del request.json["prompt"]
     generation_args = request.json
+    print(generation_args)
 
     if not isinstance(prompt, (str, list)):
         raise ValueError("Prompt must be a str or list of str")
 
     try:
-        score_list = model.score_sequence(prompt, **generation_args)
+        score_list = _score_sequence(prompt, **generation_args)
+        # score_list = model.score_sequence(prompt, **generation_args)
         results = [
             {
                 "text": prompt if isinstance(prompt, str) else prompt[i],
                 "logprob": r[0],
                 "tokens": r[1],
                 "token_logprobs": r[2],
+                "greedy_tokens": r[3],
             }
             for i, r in enumerate(score_list)
         ]

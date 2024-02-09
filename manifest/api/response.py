@@ -44,6 +44,7 @@ class ModelResponse:
                     "logprob": result["logprob"],
                     "tokens": result["tokens"],
                     "token_logprobs": result["token_logprobs"],
+                    "greedy_tokens": result["greedy_tokens"],
                 }
                 if key == "text"
                 else {
