@@ -1,13 +1,9 @@
 dev:
 	pip install -e .[all]
-	pip install -e git+https://github.com/microsoft/DeepSpeed.git#egg=deepspeed
 	pre-commit install
 
 test: dev check
 	pytest tests
-
-deepspeed:
-	pip install -e git+https://github.com/microsoft/DeepSpeed.git#egg=deepspeed
 
 format:
 	isort --atomic manifest/ tests/ web_app/
