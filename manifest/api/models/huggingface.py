@@ -25,6 +25,8 @@ from transformers import (
     OPTForCausalLM,
     PreTrainedModel,
     PreTrainedTokenizer,
+    LlavaNextForConditionalGeneration,
+    LlavaNextProcessor
 )
 
 from manifest.api.models.model import Model
@@ -64,12 +66,14 @@ MODEL_REGISTRY = {
     "google/flan-t5-l": AutoModelForSeq2SeqLM,  # 800M
     "google/flan-t5-xl": AutoModelForSeq2SeqLM,  # 3B
     "google/flan-t5-xxl": AutoModelForSeq2SeqLM,  # 11B
+    "llava-hf/llava-v1.6-mistral-7b-hf": LlavaNextForConditionalGeneration,
 }
 
 MODEL_GENTYPE_REGISTRY = {
     "text-generation": AutoModelForCausalLM,
     "llama-text-generation": LlamaForCausalLM,
     "text2text-generation": AutoModelForSeq2SeqLM,
+    "llava-text-generation": LlavaNextForConditionalGeneration,
 }
 
 
@@ -98,6 +102,7 @@ class GenerationPipeline:
         device: int = None,
         bitsandbytes: bool = False,
         is_encdec: bool = False,
+        processor: LlavaNextProcessor = None,
     ):
         """Initialize."""
         # Use to turn off sampling
@@ -121,6 +126,7 @@ class GenerationPipeline:
         print(f"Usings max_length: {self.max_length}")
 
         self.tokenizer = tokenizer
+        self.processor = processor
         # self.device = device
         # With bits and bytes, do not want to place inputs on any device
         # if self.device:
@@ -141,6 +147,17 @@ class GenerationPipeline:
         Returns:
             generated text.
         """
+        # print(text)
+        image = None
+        # If image is in kwargs, use it
+        if "image_url" in kwargs:
+            image_url = kwargs["image_url"]
+
+            from PIL import Image
+            import requests
+
+            image = Image.open(requests.get(url=image_url, stream=True).raw)
+
         # If text is longer than max model length, we reduce max input length to ensure
         # the user indicated generation tokens is preserved.
         max_input_len = (
@@ -148,13 +165,26 @@ class GenerationPipeline:
             if not self.is_encdec
             else self.max_length
         )
-        encoded_prompt = self.tokenizer(
-            text,
-            max_length=max_input_len,
-            truncation=True,
-            padding=True,
-            return_tensors="pt",
-        )
+
+        if isinstance(text, str):
+            text = [text]
+        if not image:
+            encoded_prompt = self.tokenizer(
+                text,
+                max_length=max_input_len,
+                truncation=True,
+                padding=True,
+                return_tensors="pt",
+            )
+        else:
+            encoded_prompt = self.processor(
+                text=text,
+                images=image,
+                # max_length=max_input_len,
+                # truncation=True,
+                # padding=True,
+                return_tensors="pt",
+            )
         encoded_prompt = encoded_prompt.to(self.device)
         kwargs_to_pass = dict(
             temperature=kwargs.get("temperature"),
@@ -174,6 +204,7 @@ class GenerationPipeline:
             output_scores=True,
             return_dict_in_generate=True,
         )
+        # print(output_dict)
         # logits/scores from the output always correspond to the generated tokens.
         # shape (num_tokens, num_return_sequences, vocab_size)
         logits = torch.stack(output_dict.scores)
@@ -241,7 +272,7 @@ class HuggingFaceModel(Model):
             # Try to find config
             if (Path(self.model_path) / "config.json").exists():
                 config = json.load(open(Path(self.model_path) / "config.json"))
-                model_name_or_path = config["_name_or_path"]
+                model_name_or_path = config["_name_or_path"] if '_name_or_path' in config else model_name_or_path
         self.model_name = model_name_or_path
         self.model_type = model_type
         if self.model_name not in MODEL_REGISTRY and self.model_type is None:
@@ -669,3 +700,170 @@ class TextGenerationModel(HuggingFaceModel):
                 seq_token_log_probs.tolist(),
             )
         ]
+
+
+class TextGenerationModelEx(HuggingFaceModel):
+    def __init__(
+        self,
+        model_name_or_path: str,
+        model_type: Optional[str] = None,
+        model_config: Optional[str] = None,
+        cache_dir: Optional[str] = None,
+        device: int = 0,
+        use_accelerate: bool = False,
+        use_parallelize: bool = False,
+        use_bitsandbytes: bool = False,
+        use_deepspeed: bool = False,
+        perc_max_gpu_mem_red: float = 1.0,
+        use_fp16: bool = False,
+    ):
+        """
+        Initialize model.
+
+        All arguments will be passed in the request from Manifest.
+
+        Args:
+            model_name_or_path: model name string.
+            model_config: model config string.
+            cache_dir: cache directory for model.
+            device: device to use for model.
+            use_accelerate: whether to use accelerate for multi-gpu inference.
+            use_parallelize: use HF default parallelize
+            use_bitsandbytes: use HF bits and bytes
+            use_deepspeed: use deepspeed
+            perc_max_gpu_mem_red: percent max memory reduction in accelerate
+            use_fp16: use fp16 for model weights.
+            """
+        super().__init__(
+            model_name_or_path,
+            model_type,
+            model_config,
+            cache_dir,
+            device,
+            use_accelerate,
+            use_parallelize,
+            use_bitsandbytes,
+            use_deepspeed,
+            perc_max_gpu_mem_red,
+            use_fp16,
+        )
+        # if (
+        #     MODEL_REGISTRY.get(
+        #         self.model_name, MODEL_GENTYPE_REGISTRY.get(self.model_type, None)
+        #     )
+        #     == LlavaNextForConditionalGeneration
+        # ):
+        # print(model_name_or_path)
+        processor = LlavaNextProcessor.from_pretrained(model_name_or_path)
+        tokenizer = processor.tokenizer
+        # else:
+        #     # Not support other tokenizers yet, raise error here.
+        #     raise ValueError("Only support LlavaTokenizer for now.")
+        dtype = torch.float16 if use_fp16 else "auto"
+        if use_bitsandbytes:
+            print("WARNING!!! Cannot use sampling with bitsandbytes.")
+            max_memory = get_max_memory(perc_max_gpu_mem_red)
+            model = MODEL_REGISTRY.get(
+                self.model_name, MODEL_GENTYPE_REGISTRY.get(self.model_type, None)
+            ).from_pretrained(  # type: ignore
+                self.model_path,
+                cache_dir=cache_dir,
+                load_in_8bit=True,
+                device_map="auto",
+                max_memory=max_memory,
+                trust_remote_code=True,
+            )
+        else:
+            try:
+                print(self.model_name, MODEL_GENTYPE_REGISTRY.get(self.model_type, None))
+                # Try to explicitely find a fp16 copy (gpt-j-6B for example)
+                model = MODEL_REGISTRY.get(
+                    self.model_name, MODEL_GENTYPE_REGISTRY.get(self.model_type, None)
+                ).from_pretrained(  # type: ignore
+                    self.model_path,
+                    cache_dir=cache_dir,
+                    revision="float16",
+                    torch_dtype=torch.float16,
+                    trust_remote_code=True,
+                )
+            except Exception:
+                model = MODEL_REGISTRY.get(
+                    self.model_name, MODEL_GENTYPE_REGISTRY.get(self.model_type, None)
+                ).from_pretrained(  # type: ignore
+                    self.model_path,
+                    cache_dir=cache_dir,
+                    torch_dtype=dtype,
+                    trust_remote_code=True,
+                )
+        model.eval()
+        print(f"Loaded Model DType {model.dtype}")
+        # self.is_encdec = model.config.is_encoder_decoder
+        # if not self.is_encdec:
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+        if not use_bitsandbytes:
+            if use_accelerate:
+                self._dispatch_accelerate_model(model, perc_max_gpu_mem_red)
+                device = 0
+            elif use_parallelize:
+                model.parallelize()
+                device = 0
+            elif use_deepspeed:
+                self._dispatch_deepspeed_model(model)
+                device = 0
+            else:
+                if device > -1:
+                    torch_device = (
+                        torch.device("cpu")
+                        if (device == -1 or not torch.cuda.is_available())
+                        else torch.device(f"cuda:{device}")
+                    )
+                    model = model.to(torch_device)  # type: ignore
+        self.pipeline = GenerationPipeline(  # type: ignore
+            model=model,
+            tokenizer=tokenizer,
+            processor=processor,
+            device=device,
+            bitsandbytes=use_bitsandbytes,
+            # is_encdec=self.is_encdec,
+        )
+
+    @torch.no_grad()
+    def generate(
+        self, prompt: Union[str, List[str]], **kwargs: Any
+    ) -> List[Tuple[Any, float, List[str], List[float]]]:
+        """
+        Generate the prompt from model.
+
+        Outputs must be generated text and score, not including prompt.
+
+        Args:
+            prompt: promt to generate from.
+
+        Returns:
+            list of generated text (list of length 1 for 1 generation).
+        """
+        num_return = kwargs.get("n", 1)
+        if isinstance(prompt, list) and num_return > 1:
+            raise ValueError("In batch generate, n must be 1.")
+        result = self.pipeline(
+            prompt,
+            max_new_tokens=kwargs.get("max_tokens"),
+            temperature=kwargs.get("temperature"),
+            repetition_penalty=kwargs.get("repetition_penalty"),
+            top_k=kwargs.get("top_k"),
+            top_p=kwargs.get("top_p"),
+            do_sample=kwargs.get("do_sample"),
+            image_url=kwargs.get("image_url"),
+            num_return_sequences=num_return,
+        )
+        final_results = [
+            (
+                cast(str, r["generated_text"]),
+                sum(cast(List[float], r["logprobs"])),
+                cast(List[str], r["tokens"]),
+                cast(List[float], r["logprobs"]),
+            )
+            for r in result
+        ]
+        return final_results

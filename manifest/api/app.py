@@ -16,6 +16,7 @@ from manifest.api.models.huggingface import (
     MODEL_GENTYPE_REGISTRY,
     CrossModalEncoderModel,
     TextGenerationModel,
+    TextGenerationModelEx,
 )
 from manifest.api.models.sentence_transformer import SentenceTransformerModel
 from manifest.api.response import ModelResponse
@@ -30,6 +31,7 @@ model_type = None
 PORT = int(os.environ.get("FLASK_PORT", 5000))
 MODEL_CONSTRUCTORS = {
     "huggingface": TextGenerationModel,
+    "huggingface_ex": TextGenerationModelEx,
     "sentence_transformers": SentenceTransformerModel,
     "huggingface_crossmodal": CrossModalEncoderModel,
     "diffuser": DiffuserModel,
@@ -146,6 +148,7 @@ def main() -> None:
         )
     # Global model
     global model
+    
     model = MODEL_CONSTRUCTORS[model_type](
         model_name_or_path,
         model_type=model_gen_type,
@@ -167,7 +170,7 @@ def completions() -> Response:
     prompt = request.json["prompt"]
     del request.json["prompt"]
     generation_args = request.json
-    print(generation_args)
+    # print(generation_args)
 
     if not isinstance(prompt, (str, list)):
         raise ValueError("Prompt must be a str or list of str")
@@ -312,7 +315,7 @@ def score_sequence() -> Response:
     prompt = request.json["prompt"]
     del request.json["prompt"]
     generation_args = request.json
-    print(generation_args)
+    # print(generation_args)
 
     if not isinstance(prompt, (str, list)):
         raise ValueError("Prompt must be a str or list of str")
