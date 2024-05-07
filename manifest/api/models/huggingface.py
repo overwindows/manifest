@@ -3,6 +3,11 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
+import base64
+import requests
+from io import BytesIO
+from PIL import Image
+
 import deepspeed
 import numpy as np
 import PIL
@@ -147,16 +152,21 @@ class GenerationPipeline:
         Returns:
             generated text.
         """
-        # print(text)
         image = None
         # If image is in kwargs, use it
-        if "image_url" in kwargs:
+        if "image_url" in kwargs and kwargs["image_url"] is not None:
             image_url = kwargs["image_url"]
-
-            from PIL import Image
-            import requests
-
             image = Image.open(requests.get(url=image_url, stream=True).raw)
+
+        if "image_encoded" in kwargs and kwargs["image_encoded"] is not None:
+            # Decode the base64 string to binary
+            decoded_image_data = base64.b64decode(kwargs["image_encoded"])
+
+            # Wrap the binary data in a BytesIO object
+            image_data = BytesIO(decoded_image_data)
+
+            # Open the image using PIL
+            image = Image.open(image_data)
 
         # If text is longer than max model length, we reduce max input length to ensure
         # the user indicated generation tokens is preserved.
@@ -854,7 +864,8 @@ class TextGenerationModelEx(HuggingFaceModel):
             top_k=kwargs.get("top_k"),
             top_p=kwargs.get("top_p"),
             do_sample=kwargs.get("do_sample"),
-            image_url=kwargs.get("image_url"),
+            image_url=kwargs.get("image_url", None),
+            image_encoded=kwargs.get("image_encoded", None),
             num_return_sequences=num_return,
         )
         final_results = [

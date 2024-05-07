@@ -170,7 +170,6 @@ def completions() -> Response:
     prompt = request.json["prompt"]
     del request.json["prompt"]
     generation_args = request.json
-    # print(generation_args)
 
     if not isinstance(prompt, (str, list)):
         raise ValueError("Prompt must be a str or list of str")
