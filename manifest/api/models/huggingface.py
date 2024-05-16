@@ -760,6 +760,7 @@ class TextGenerationModelEx(HuggingFaceModel):
             perc_max_gpu_mem_red,
             use_fp16,
         )
+        processor = None
         if (
             MODEL_REGISTRY.get(
                 self.model_name, MODEL_GENTYPE_REGISTRY.get(self.model_type, None)
@@ -773,7 +774,7 @@ class TextGenerationModelEx(HuggingFaceModel):
         elif (
                 MODEL_REGISTRY.get(
                     self.model_name, MODEL_GENTYPE_REGISTRY.get(self.model_type, None)
-                ) == LlavaLLamaForCaualLM):
+                ) == LlavaLlamaForCausalLM):
             assert self.model_type == "llava-generation"
             print("Using LlavaTokenizer")
             tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
@@ -799,10 +800,11 @@ class TextGenerationModelEx(HuggingFaceModel):
             try:
                 print(self.model_name, MODEL_GENTYPE_REGISTRY.get(self.model_type, None))
                 if self.model_type == "llava-generation":
-                    model = LlavaLLamaForCaualLM.from_pretrained(
+                    print("Loading LlavaLlamaForCausalLM {}".format(self.model_path))
+                    model = LlavaLlamaForCausalLM.from_pretrained(
                         self.model_path, cache_dir=cache_dir, trust_remote_code=True)
                     # print the model
-                    print(model)
+                    # print(model)
                 else:
                     # Try to explicitely find a fp16 copy (gpt-j-6B for example)
                     model = MODEL_REGISTRY.get(
@@ -815,7 +817,7 @@ class TextGenerationModelEx(HuggingFaceModel):
                         torch_dtype=torch.float16,
                         trust_remote_code=True,
                     )
-                    print(model)
+                    # print(model)
             except Exception:
                 model = MODEL_REGISTRY.get(
                     self.model_name, MODEL_GENTYPE_REGISTRY.get(self.model_type, None)
