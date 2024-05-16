@@ -31,10 +31,12 @@ from transformers import (
     PreTrainedModel,
     PreTrainedTokenizer,
     LlavaNextForConditionalGeneration,
-    LlavaNextProcessor
+    LlavaNextProcessor,
+    AutoProcessor, LlavaForConditionalGeneration
 )
 
 from manifest.api.models.model import Model
+from llava.model.language_model.llava_llama import LlavaLlamaForCausalLM
 
 MODEL_REGISTRY = {
     "EleutherAI/gpt-neo-125M": GPTNeoForCausalLM,
@@ -78,7 +80,8 @@ MODEL_GENTYPE_REGISTRY = {
     "text-generation": AutoModelForCausalLM,
     "llama-text-generation": LlamaForCausalLM,
     "text2text-generation": AutoModelForSeq2SeqLM,
-    "llava-text-generation": LlavaNextForConditionalGeneration,
+    "llava-next-generation": LlavaNextForConditionalGeneration,
+    "llava-generation": LlavaLlamaForCausalLM,
 }
 
 
@@ -757,18 +760,27 @@ class TextGenerationModelEx(HuggingFaceModel):
             perc_max_gpu_mem_red,
             use_fp16,
         )
-        # if (
-        #     MODEL_REGISTRY.get(
-        #         self.model_name, MODEL_GENTYPE_REGISTRY.get(self.model_type, None)
-        #     )
-        #     == LlavaNextForConditionalGeneration
-        # ):
-        # print(model_name_or_path)
-        processor = LlavaNextProcessor.from_pretrained(model_name_or_path)
-        tokenizer = processor.tokenizer
-        # else:
-        #     # Not support other tokenizers yet, raise error here.
-        #     raise ValueError("Only support LlavaTokenizer for now.")
+        if (
+            MODEL_REGISTRY.get(
+                self.model_name, MODEL_GENTYPE_REGISTRY.get(self.model_type, None)
+            )
+            == LlavaNextForConditionalGeneration
+        ):
+            assert self.model_type == "llava-next-generation"
+            print("Using LlavaNextProcessor")
+            processor = LlavaNextProcessor.from_pretrained(model_name_or_path)
+            tokenizer = processor.tokenizer
+        elif (
+                MODEL_REGISTRY.get(
+                    self.model_name, MODEL_GENTYPE_REGISTRY.get(self.model_type, None)
+                ) == LlavaLLamaForCaualLM):
+            assert self.model_type == "llava-generation"
+            print("Using LlavaTokenizer")
+            tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
+        else:
+            # Not support other tokenizers yet, raise error here.
+            raise ValueError("Only support LlavaTokenizer for now.")
+
         dtype = torch.float16 if use_fp16 else "auto"
         if use_bitsandbytes:
             print("WARNING!!! Cannot use sampling with bitsandbytes.")
@@ -786,16 +798,24 @@ class TextGenerationModelEx(HuggingFaceModel):
         else:
             try:
                 print(self.model_name, MODEL_GENTYPE_REGISTRY.get(self.model_type, None))
-                # Try to explicitely find a fp16 copy (gpt-j-6B for example)
-                model = MODEL_REGISTRY.get(
-                    self.model_name, MODEL_GENTYPE_REGISTRY.get(self.model_type, None)
-                ).from_pretrained(  # type: ignore
-                    self.model_path,
-                    cache_dir=cache_dir,
-                    revision="float16",
-                    torch_dtype=torch.float16,
-                    trust_remote_code=True,
-                )
+                if self.model_type == "llava-generation":
+                    model = LlavaLLamaForCaualLM.from_pretrained(
+                        self.model_path, cache_dir=cache_dir, trust_remote_code=True)
+                    # print the model
+                    print(model)
+                else:
+                    # Try to explicitely find a fp16 copy (gpt-j-6B for example)
+                    model = MODEL_REGISTRY.get(
+                        self.model_name, MODEL_GENTYPE_REGISTRY.get(
+                            self.model_type, None)
+                    ).from_pretrained(  # type: ignore
+                        self.model_path,
+                        cache_dir=cache_dir,
+                        revision="float16",
+                        torch_dtype=torch.float16,
+                        trust_remote_code=True,
+                    )
+                    print(model)
             except Exception:
                 model = MODEL_REGISTRY.get(
                     self.model_name, MODEL_GENTYPE_REGISTRY.get(self.model_type, None)
@@ -835,7 +855,7 @@ class TextGenerationModelEx(HuggingFaceModel):
             processor=processor,
             device=device,
             bitsandbytes=use_bitsandbytes,
-            # is_encdec=self.is_encdec,
+            is_encdec=False,
         )
 
     @torch.no_grad()
